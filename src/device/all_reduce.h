@@ -83,6 +83,79 @@ namespace {
   }
 
   template<typename T, typename RedOp, typename Proto>
+  __device__ __forceinline__ void runRabenseifner(int tid, int nthreads, struct ncclDevWorkColl* work) {
+    ncclRing *ring = &ncclShmem.channel.ring;
+    int ringIx = ring->index;
+    const int nranks = ncclShmem.comm.nRanks;
+    ssize_t gridOffset;
+    ssize_t channelCount;
+    ssize_t chunkCount;
+    ncclCollCbdPart(work, ncclShmem.channelId, Proto::Id, sizeof(T), (ssize_t*)nullptr, &gridOffset, &channelCount, &chunkCount);
+    const ssize_t loopCount = nranks * chunkCount;
+    ssize_t offset;
+    int nelem;
+    int chunk;
+
+    // Coverity reports that the callee treats &ring->next as an array.  However, due to the use of
+    // FanSymmetric<1>, only the first element is ever accessed, so it's fine.
+    // coverity[callee_ptr_arith:FALSE]
+    Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0> prims
+      (tid, nthreads, &ring->prev, &ring->next, work->sendbuff, work->recvbuff, work->redOpArg, 0, 0, 0, work);
+
+    for (ssize_t elemOffset = 0; elemOffset < channelCount; elemOffset += loopCount) {
+      ssize_t remCount = channelCount - elemOffset;
+      ssize_t chunkOffset;
+
+      if (remCount < loopCount) chunkCount = alignUp(divUp(remCount, nranks), 16/sizeof(T));
+
+      auto modRanks = [&]__device__(int r)->int {
+        return r - (r >= nranks ? nranks : 0);
+      };
+
+      // step 0: push data to next GPU
+      chunk = modRanks(ringIx + nranks - 1);
+      chunkOffset = chunk * chunkCount;
+      offset = gridOffset + elemOffset + chunkOffset;
+      nelem = (int)min(chunkCount, remCount - chunkOffset);
+      prims.directSend(offset, offset, nelem);
+
+      // k-2 steps: reduce and copy to next GPU
+      for (int j = 2; j < nranks; ++j) {
+        chunk = modRanks(ringIx + nranks - j);
+        chunkOffset = chunk * chunkCount;
+        offset = gridOffset + elemOffset + chunkOffset;
+        nelem = (int)min(chunkCount, remCount - chunkOffset);
+        prims.directRecvReduceDirectSend(offset, offset, nelem);
+      }
+
+      // step k-1: reduce this buffer and data, which will produce the final
+      // result that we store in this data and push to the next GPU
+      chunk = ringIx + 0;
+      chunkOffset = chunk * chunkCount;
+      offset = gridOffset + elemOffset + chunkOffset;
+      nelem = (int)min(chunkCount, remCount - chunkOffset);
+      prims.directRecvReduceCopyDirectSend(offset, offset, nelem, /*postOp=*/true);
+
+      // k-2 steps: copy to next GPU
+      for (int j = 1; j < nranks - 1; ++j) {
+        chunk = modRanks(ringIx + nranks - j);
+        chunkOffset = chunk * chunkCount;
+        offset = gridOffset + elemOffset + chunkOffset;
+        nelem = (int)min(chunkCount, remCount - chunkOffset);
+        prims.directRecvCopyDirectSend(offset, nelem);
+      }
+
+      // Make final copy from buffer to dest.
+      chunk = modRanks(ringIx + 1);
+      chunkOffset = chunk * chunkCount;
+      offset = gridOffset + elemOffset + chunkOffset;
+      nelem = (int)min(chunkCount, remCount - chunkOffset);
+
+      prims.directRecv(offset, offset, nelem);
+    }
+  }
+
+  template<typename T, typename RedOp, typename Proto>
   __device__ __forceinline__ void runTreeUpDown(int tid, int nthreads, struct ncclDevWorkColl* work) {
     ncclTree *tree = &ncclShmem.channel.tree;
     size_t gridOffset;
@@ -234,6 +307,14 @@ struct RunWorkColl<ncclFuncAllReduce, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPL
   __device__ __forceinline__ void run(int tid, int nthreads, struct ncclDevWorkColl* work) {
     using Proto = ProtoSimple<ALLREDUCE_CHUNKSTEPS/ALLREDUCE_SLICESTEPS, ALLREDUCE_SLICESTEPS>;
     runRing<T, RedOp, Proto>(tid, nthreads, work);
+  }
+};
+
+template<typename T, typename RedOp>
+struct RunWorkColl<ncclFuncAllReduce, T, RedOp, NCCL_ALGO_RABENSEIFNER, NCCL_PROTO_SIMPLE> {
+  __device__ __forceinline__ void run(int tid, int nthreads, struct ncclDevWorkColl* work) {
+    using Proto = ProtoSimple<ALLREDUCE_CHUNKSTEPS/ALLREDUCE_SLICESTEPS, ALLREDUCE_SLICESTEPS>;
+    runRabenseifner<T, RedOp, Proto>(tid, nthreads, work);
   }
 };
 
