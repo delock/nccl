@@ -82,16 +82,20 @@ namespace {
     }
   }
 
+  // rabenseifner algorithm
+  // precondition: nranks is a power of 2
+  // precondition: for each loop message size is divisible by nranks
   template<typename T, typename RedOp, typename Proto>
   __device__ __forceinline__ void runRabenseifner(int tid, int nthreads, struct ncclDevWorkColl* work) {
     ncclRing *ring = &ncclShmem.channel.ring;
     int ringIx = ring->index;
     const int nranks = ncclShmem.comm.nRanks;
+    const int log2nranks = __log2f(nranks);
     ssize_t gridOffset;
     ssize_t channelCount;
     ssize_t chunkCount;
     ncclCollCbdPart(work, ncclShmem.channelId, Proto::Id, sizeof(T), (ssize_t*)nullptr, &gridOffset, &channelCount, &chunkCount);
-    const ssize_t loopCount = nranks * chunkCount;
+    const ssize_t loopCount = log2nranks * chunkCount;
     ssize_t offset;
     int nelem;
     int chunk;
@@ -112,36 +116,71 @@ namespace {
         return r - (r >= nranks ? nranks : 0);
       };
 
+/*
+rank:   00     01     10      11
+step 0:
+  mask: 1
+  tgtrk 01     00     11      10
+  send  10     00     10      00
+  recv  00     10     00      10
+step 1:
+  mask: 10
+  tgtrk 10     11     00      01
+  send  01     11     00      10
+  recv  00     10     01      11
+*/
+      int mask, targetRank, xchg_nchunks;
       // step 0: push data to next GPU
-      chunk = modRanks(ringIx + nranks - 1);
-      chunkOffset = chunk * chunkCount;
-      offset = gridOffset + elemOffset + chunkOffset;
-      nelem = (int)min(chunkCount, remCount - chunkOffset);
+      mask = 1;
+      targetRank = ringIx ^ mask;
+      xchg_nchunks = nranks/2;
+      // the chunk receieved
+      this_chunk = ringIx & (mask*2-1);
+      // the chunk send to remote rank
+      target_chunk = targetRank & (mask*2-1);
+
+      this_chunkOffset = this_chunk * chunkCount;
+      target_chunkOffset = target_chunk * chunkCount;
+      this_offset = gridOffset + elemOffset + this_chunkOffset;
+      target_offset = gridOffset + elemOffset + target_chunkOffset;
+      nelem = chunkCount*xchg_nchunks;
       prims.directSend(offset, offset, nelem);
 
       // k-2 steps: reduce and copy to next GPU
-      for (int j = 2; j < nranks; ++j) {
-        chunk = modRanks(ringIx + nranks - j);
+      for (int j = 1; j < log2nranks; ++j) {
+        mask <<= 1;
+        targetRank = ringIx ^ mask;
+        xchg_nchunks /= 2;
+        chunk = ringIx & (mask*2-1);
+
         chunkOffset = chunk * chunkCount;
         offset = gridOffset + elemOffset + chunkOffset;
-        nelem = (int)min(chunkCount, remCount - chunkOffset);
+        nelem = (int)min(chunkCount*xchg_nchunks, remCount - chunkOffset);
         prims.directRecvReduceDirectSend(offset, offset, nelem);
       }
 
       // step k-1: reduce this buffer and data, which will produce the final
       // result that we store in this data and push to the next GPU
-      chunk = ringIx + 0;
+      targetRank = ringIx ^ mask;
+      mask >>= 1;
+      assert (xchg_nchunks == 1);
+      chunk = ringIx & (mask*2-1);
+
       chunkOffset = chunk * chunkCount;
       offset = gridOffset + elemOffset + chunkOffset;
-      nelem = (int)min(chunkCount, remCount - chunkOffset);
+      nelem = (int)min(chunkCount*xchg_nchunks, remCount - chunkOffset);
       prims.directRecvReduceCopyDirectSend(offset, offset, nelem, /*postOp=*/true);
 
       // k-2 steps: copy to next GPU
-      for (int j = 1; j < nranks - 1; ++j) {
-        chunk = modRanks(ringIx + nranks - j);
+      for (int j = 1; j < log2nranks; ++j) {
+        targetRank = ringIx ^ mask;
+        mask >>= 1;
+        xchg_nchunks *= 2;
+        chunk = ringIx & (mask*2-1);
+
         chunkOffset = chunk * chunkCount;
         offset = gridOffset + elemOffset + chunkOffset;
-        nelem = (int)min(chunkCount, remCount - chunkOffset);
+        nelem = (int)min(chunkCount*xchg_nchunks, remCount - chunkOffset);
         prims.directRecvCopyDirectSend(offset, nelem);
       }
 
