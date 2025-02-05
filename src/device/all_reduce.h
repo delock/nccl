@@ -116,72 +116,147 @@ namespace {
         return r - (r >= nranks ? nranks : 0);
       };
 
-/*
-rank:   00     01     10      11
-step 0:
-  mask: 1
-  tgtrk 01     00     11      10
-  send  10     00     10      00
-  recv  00     10     00      10
-step 1:
-  mask: 10
-  tgtrk 10     11     00      01
-  send  01     11     00      10
-  recv  00     10     01      11
-*/
-      int mask, targetRank, xchg_nchunks, this_chunk, target_chunk;
+      int mask, targetRank, xchg_nchunks, this_chunk, target_chunk, tmp_chunk;
       // step 0: push data to next GPU
-      mask = 1;
-      targetRank = ringIx ^ mask;
-      xchg_nchunks = nranks/2;
+      //mask = 1;
+      //targetRank = ringIx ^ mask;
+      //xchg_nchunks = nranks/2;
       // the chunk receieved
-      this_chunk = ringIx & (mask*2-1);
+      //this_chunk = ringIx & mask;
       // the chunk send to remote rank
-      target_chunk = targetRank & (mask*2-1);
+      //target_chunk = targetRank & (mask*2-1);
 
-      this_chunkOffset = this_chunk * chunkCount;
-      target_chunkOffset = target_chunk * chunkCount;
-      this_offset = gridOffset + elemOffset + this_chunkOffset;
-      target_offset = gridOffset + elemOffset + target_chunkOffset;
-      nelem = chunkCount*xchg_nchunks;
-      prims.directSend(offset, offset, nelem);
+      //this_chunkOffset = this_chunk * chunkCount;
+      //target_chunkOffset = target_chunk * chunkCount;
+      //this_offset = gridOffset + elemOffset + this_chunkOffset;
+      //target_offset = gridOffset + elemOffset + target_chunkOffset;
+      //nelem = chunkCount*xchg_nchunks;
+      //prims.directSend(offset, offset, nelem);
 
-      // k-2 steps: reduce and copy to next GPU
-      for (int j = 1; j < log2nranks; ++j) {
-        mask <<= 1;
+      // rank:                0      1      2       3       4       5       6       7
+      // binary:              000    001    010     011     100     101     110     111
+      // reverse binary:      000    100    010     110     001     101     011     111
+      // REDUCE SCATTER PHASE
+      // step 0, xchg between 0-1 2-3 4-5 6-7
+      //   mask: 1
+      //   2*mask-1 = 1, reverse binary = 100
+      //   xchg_nchunks: 4
+      //   targetRank:        1      0      3       2       5       4       7       6
+      //   this_chunk:        0      4      0       4       0       4       0       4
+      //   binary:            000    100    000     100     000     100     000     100
+      //   target_chunk:      4      0      4       0       4       0       4       0
+      // step 1, xchg between 0-2 1-3 4-6 5-7
+      //   mask: 2
+      //   2*mask-1 = 3, reverse binary = 110
+      //   xchg_nchunks: 2
+      //   targetRank:        2      3      0       1       6       7       4       5
+      //   this_chunk:        0      4      2       6       0       4       2       6
+      //   binary:            000    100    010     110     000     100     010     110
+      //   target_chunk:      2      6      0       4       2       6       0       4
+      // step 2, xchg between 0-4 1-5 2-6 3-7
+      //   mask: 4
+      //   2*mask-1 = 7, reverse binary = 111
+      //   xchg_nchunks: 1
+      //   targetRank:        4      5      6       7       0       1       2       3
+      //   this_chunk:        0      4      2       6       1       5       3       7
+      //   binary:            000    100    010     110     001     101     011     111
+      //   target_chunk:      1      5      3       7       0       4       2       6
+      //
+      // in REDUCE SCATTER phase, this_chunk = reverse binary of rank & rever binary of 2*mask-1
+      //
+      // ALLGATHER PHASE
+      // step 3, xchg between 0-4 1-5 2-6 3-7
+      //   mask: 4
+      //   2*mask-1 = 7, reverse binary = 111
+      //   xchg_nchunks: 1
+      //   targetRank:        4      5      6       7       0       1       2       3
+      //   this_chunk:        1      5      3       7       0       4       2       6
+      //   binary:            001    101    011     111     000     100     010     110
+      //   target_chunk:      0      4      2       6       1       5       3       7
+      // step 4, xchg between 0-2 1-3 4-6 5-7
+      //   mask: 2
+      //   2*mask-1 = 3, reverse binary = 110
+      //   xchg_nchunks: 2
+      //   targetRank:        2      3      0       1       6       7       4       5
+      //   this_chunk:        2      6      0       4       2       6       0       4
+      //   binary:            010    110    000     100     010     110     000     100
+      //   target_chunk:      0      4      2       6       1       5       3       7
+      // step 5, xchg between 0-1 2-3 4-5 6-7
+      //   mask: 1
+      //   2*mask-1 = 1, reverse binary = 100
+      //   xchg_nchunks: 4
+      //   targetRank:        1      0      3       2       5       4       7       6
+      //   this_chunk:        4      0      4       0       4       0       4       0
+      //   binary:            100    000    100     000     100     000     100     000
+      //   target_chunk:      0      4      0       4       0       4       0       4
+
+      // log2(k) steps: reduce and copy to pair
+      // setup condition for step 0
+      mask = 1;
+      xchg_nchunks = nranks/2;
+      this_chunk = 0;
+      for (int j = 0; j < log2nranks; ++j) {
         targetRank = ringIx ^ mask;
-        xchg_nchunks /= 2;
-        chunk = ringIx & (mask*2-1);
+        if ((ringIx & mask) != 0) {  // targetRank, < ringIx
+            target_chunk = this_chunk;
+            this_chunk += xchg_nchunks;
+        } else { // ringIx < targetRank
+            target_chunk = this_chunk + xchg_nchunks;
+        }
 
-        chunkOffset = chunk * chunkCount;
-        offset = gridOffset + elemOffset + chunkOffset;
-        nelem = (int)min(chunkCount*xchg_nchunks, remCount - chunkOffset);
-        prims.directRecvReduceDirectSend(offset, offset, nelem);
+        this_chunkOffset = this_chunk * chunkCount;
+        target_chunkOffset = target_chunk * chunkCount;
+        this_offset = gridOffset + elemOffset + this_chunkOffset;
+        target_offset = gridOffset + elemOffset + target_chunkOffset;
+        //nelem = (int)min(chunkCount*xchg_nchunks, remCount - chunkOffset);
+        nelem = chunkCount*xchg_nchunks;
+        prims.directRecvReduceDirectSend(this_offset, target_offset, nelem);
+
+        mask <<= 1;
+        xchg_nchunks /= 2;
       }
 
       // step k-1: reduce this buffer and data, which will produce the final
       // result that we store in this data and push to the next GPU
-      targetRank = ringIx ^ mask;
+      //targetRank = ringIx ^ mask;
+      //mask >>= 1;
+      //assert (xchg_nchunks == 1);
+      //chunk = ringIx & (mask*2-1);
+      //
+      //chunkOffset = chunk * chunkCount;
+      //offset = gridOffset + elemOffset + chunkOffset;
+      //nelem = (int)min(chunkCount*xchg_nchunks, remCount - chunkOffset);
+      //prims.directRecvReduceCopyDirectSend(offset, offset, nelem, /*postOp=*/true);
+
+      // k-1 steps: copy to next GPU
+      xchg_nchunks = 1;
       mask >>= 1;
-      assert (xchg_nchunks == 1);
-      chunk = ringIx & (mask*2-1);
+      // exchange target chunk and this chunk in allgather phase
+      tmp_chunk = target_chunk;
+      target_chunk = this_chunk;
+      this_chunk = tmp_chunk;
 
-      chunkOffset = chunk * chunkCount;
-      offset = gridOffset + elemOffset + chunkOffset;
-      nelem = (int)min(chunkCount*xchg_nchunks, remCount - chunkOffset);
-      prims.directRecvReduceCopyDirectSend(offset, offset, nelem, /*postOp=*/true);
-
-      // k-2 steps: copy to next GPU
-      for (int j = 1; j < log2nranks; ++j) {
+      for (int j = 0; j < log2nranks; ++j) {
         targetRank = ringIx ^ mask;
-        mask >>= 1;
-        xchg_nchunks *= 2;
-        chunk = ringIx & (mask*2-1);
+        if ((ringIx & mask) != 0) { // targetRank < ringIx
+            this_chunk = target_chunk - xchg_nchunks;
+        } else { // ringIx < targetRank
+            this_chunk = target_chunk + xchg_nchunks;
+        }
 
-        chunkOffset = chunk * chunkCount;
-        offset = gridOffset + elemOffset + chunkOffset;
-        nelem = (int)min(chunkCount*xchg_nchunks, remCount - chunkOffset);
+
+        this_chunkOffset = this_chunk * chunkCount;
+        target_chunkOffset = target_chunk * chunkCount;
+        this_offset = gridOffset + elemOffset + this_chunkOffset;
+        target_offset = gridOffset + elemOffset + target_chunkOffset;
+        //nelem = (int)min(chunkCount*xchg_nchunks, remCount - chunkOffset);
+        nelem = chunkCount*xchg_nchunks;
         prims.directRecvCopyDirectSend(offset, nelem);
+
+        if ((ringIx & mask) != 0) // targetRank < ringIx
+            target_chunk -= xchg_nchunks;
+        xchg_nchunks *= 2;
+        mask >>= 1;
       }
 
       // Make final copy from buffer to dest.
