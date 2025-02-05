@@ -97,7 +97,7 @@ namespace {
     ncclCollCbdPart(work, ncclShmem.channelId, Proto::Id, sizeof(T), (ssize_t*)nullptr, &gridOffset, &channelCount, &chunkCount);
     const ssize_t loopCount = log2nranks * chunkCount;
     ssize_t offset;
-    int nelem;
+    int this_nelem, target_nelem;
     int chunk;
 
     // Coverity reports that the callee treats &ring->next as an array.  However, due to the use of
@@ -208,9 +208,10 @@ namespace {
         target_chunkOffset = target_chunk * chunkCount;
         this_offset = gridOffset + elemOffset + this_chunkOffset;
         target_offset = gridOffset + elemOffset + target_chunkOffset;
-        //nelem = (int)min(chunkCount*xchg_nchunks, remCount - chunkOffset);
-        nelem = chunkCount*xchg_nchunks;
-        prims.directRecvReduceDirectSend(this_offset, target_offset, nelem);
+        this_nelem = (int)min(chunkCount*xchg_nchunks, remCount - this_chunkOffset);
+        target_nelem = (int)min(chunkCount*xchg_nchunks, remCount - target_chunkOffset);
+        prims.directSend(target_offset, target_offset, target_nelem);
+        prims.directRecvReduceCopy(this_offset, this_offset, this_nelem);
 
         mask <<= 1;
         xchg_nchunks /= 2;
@@ -250,8 +251,12 @@ namespace {
         this_offset = gridOffset + elemOffset + this_chunkOffset;
         target_offset = gridOffset + elemOffset + target_chunkOffset;
         //nelem = (int)min(chunkCount*xchg_nchunks, remCount - chunkOffset);
-        nelem = chunkCount*xchg_nchunks;
-        prims.directRecvCopyDirectSend(offset, nelem);
+        //nelem = chunkCount*xchg_nchunks;
+        this_nelem = (int)min(chunkCount*xchg_nchunks, remCount - this_chunkOffset);
+        target_nelem = (int)min(chunkCount*xchg_nchunks, remCount - target_chunkOffset);
+        prims.directSend(target_offset, target_offset, target_nelem);
+        prims.directRecvCopy(this_offset, this_offset, this_nelem);
+        //prims.directRecvCopyDirectSend(offset, nelem);
 
         if ((ringIx & mask) != 0) // targetRank < ringIx
             target_chunk -= xchg_nchunks;
@@ -260,12 +265,12 @@ namespace {
       }
 
       // Make final copy from buffer to dest.
-      chunk = modRanks(ringIx + 1);
-      chunkOffset = chunk * chunkCount;
-      offset = gridOffset + elemOffset + chunkOffset;
-      nelem = (int)min(chunkCount, remCount - chunkOffset);
+      //chunk = modRanks(ringIx + 1);
+      //chunkOffset = chunk * chunkCount;
+      //offset = gridOffset + elemOffset + chunkOffset;
+      //nelem = (int)min(chunkCount, remCount - chunkOffset);
 
-      prims.directRecv(offset, offset, nelem);
+      //prims.directRecv(offset, offset, nelem);
     }
   }
 
