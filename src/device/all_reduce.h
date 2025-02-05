@@ -103,6 +103,14 @@ namespace {
     // Coverity reports that the callee treats &ring->next as an array.  However, due to the use of
     // FanSymmetric<1>, only the first element is ever accessed, so it's fine.
     // coverity[callee_ptr_arith:FALSE]
+    // initialize log2nranks primitives and put them in a vector
+    int mask = 1;
+    for (int i=0; i<log2nranks; i++) {
+      int targetRank = rank ^ mask;
+      Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0> prims
+        (tid, nthreads, &ring->userRanks[targetRank], &ring->userRanks[targetRank], work->sendbuff, work->recvbuff, work->redOpArg, 0, 0, 0, work);
+      mask <<= 1;
+    }
     Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0> prims
       (tid, nthreads, &ring->prev, &ring->next, work->sendbuff, work->recvbuff, work->redOpArg, 0, 0, 0, work);
 
