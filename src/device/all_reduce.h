@@ -108,7 +108,7 @@ namespace {
 
     for (ssize_t elemOffset = 0; elemOffset < channelCount; elemOffset += loopCount) {
       ssize_t remCount = channelCount - elemOffset;
-      ssize_t chunkOffset;
+      ssize_t chunkOffset, this_chunkOffset, target_chunkOffset, this_offset, target_offset;
 
       if (remCount < loopCount) chunkCount = alignUp(divUp(remCount, nranks), 16/sizeof(T));
 
@@ -129,7 +129,7 @@ step 1:
   send  01     11     00      10
   recv  00     10     01      11
 */
-      int mask, targetRank, xchg_nchunks;
+      int mask, targetRank, xchg_nchunks, this_chunk, target_chunk;
       // step 0: push data to next GPU
       mask = 1;
       targetRank = ringIx ^ mask;
