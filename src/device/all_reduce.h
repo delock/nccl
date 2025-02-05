@@ -88,7 +88,7 @@ namespace {
   template<typename T, typename RedOp, typename Proto>
   __device__ __forceinline__ void runRabenseifner(int tid, int nthreads, struct ncclDevWorkColl* work) {
     ncclRing *ring = &ncclShmem.channel.ring;
-    int ringIx = ring->index;
+    int rank = ring->index;
     const int nranks = ncclShmem.comm.nRanks;
     const int log2nranks = __log2f(nranks);
     ssize_t gridOffset;
@@ -119,10 +119,10 @@ namespace {
       int mask, targetRank, xchg_nchunks, this_chunk, target_chunk, tmp_chunk;
       // step 0: push data to next GPU
       //mask = 1;
-      //targetRank = ringIx ^ mask;
+      //targetRank = rank ^ mask;
       //xchg_nchunks = nranks/2;
       // the chunk receieved
-      //this_chunk = ringIx & mask;
+      //this_chunk = rank & mask;
       // the chunk send to remote rank
       //target_chunk = targetRank & (mask*2-1);
 
@@ -196,11 +196,11 @@ namespace {
       xchg_nchunks = nranks/2;
       this_chunk = 0;
       for (int j = 0; j < log2nranks; ++j) {
-        targetRank = ringIx ^ mask;
-        if ((ringIx & mask) != 0) {  // targetRank, < ringIx
+        targetRank = rank ^ mask;
+        if ((rank & mask) != 0) {  // targetRank, < rank
             target_chunk = this_chunk;
             this_chunk += xchg_nchunks;
-        } else { // ringIx < targetRank
+        } else { // rank < targetRank
             target_chunk = this_chunk + xchg_nchunks;
         }
 
@@ -219,10 +219,10 @@ namespace {
 
       // step k-1: reduce this buffer and data, which will produce the final
       // result that we store in this data and push to the next GPU
-      //targetRank = ringIx ^ mask;
+      //targetRank = rank ^ mask;
       //mask >>= 1;
       //assert (xchg_nchunks == 1);
-      //chunk = ringIx & (mask*2-1);
+      //chunk = rank & (mask*2-1);
       //
       //chunkOffset = chunk * chunkCount;
       //offset = gridOffset + elemOffset + chunkOffset;
@@ -238,10 +238,10 @@ namespace {
       this_chunk = tmp_chunk;
 
       for (int j = 0; j < log2nranks; ++j) {
-        targetRank = ringIx ^ mask;
-        if ((ringIx & mask) != 0) { // targetRank < ringIx
+        targetRank = rank ^ mask;
+        if ((rank & mask) != 0) { // targetRank < rank
             this_chunk = target_chunk - xchg_nchunks;
-        } else { // ringIx < targetRank
+        } else { // rank < targetRank
             this_chunk = target_chunk + xchg_nchunks;
         }
 
@@ -258,14 +258,14 @@ namespace {
         prims.directRecvCopy(this_offset, this_offset, this_nelem);
         //prims.directRecvCopyDirectSend(offset, nelem);
 
-        if ((ringIx & mask) != 0) // targetRank < ringIx
+        if ((rank & mask) != 0) // targetRank < rank
             target_chunk -= xchg_nchunks;
         xchg_nchunks *= 2;
         mask >>= 1;
       }
 
       // Make final copy from buffer to dest.
-      //chunk = modRanks(ringIx + 1);
+      //chunk = modRanks(rank + 1);
       //chunkOffset = chunk * chunkCount;
       //offset = gridOffset + elemOffset + chunkOffset;
       //nelem = (int)min(chunkCount, remCount - chunkOffset);
