@@ -7,6 +7,7 @@
 #include "device.h"
 #include "collectives.h"
 #include "primitives.h"
+#include <vector>
 
 namespace {
   template<typename T, typename RedOp, typename Proto>
@@ -104,15 +105,19 @@ namespace {
     // FanSymmetric<1>, only the first element is ever accessed, so it's fine.
     // coverity[callee_ptr_arith:FALSE]
     // initialize log2nranks primitives and put them in a vector
+    using prim_t = Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0>;
+    std::vector<std::reference_wrapper<prim_t>> prim_v;
     int mask = 1;
     for (int i=0; i<log2nranks; i++) {
       int targetRank = rank ^ mask;
+      // create primitive for target rank and put it in vector
       Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0> prims
         (tid, nthreads, &ring->userRanks[targetRank], &ring->userRanks[targetRank], work->sendbuff, work->recvbuff, work->redOpArg, 0, 0, 0, work);
+      prim_v.push_back(prims);
       mask <<= 1;
     }
-    Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0> prims
-      (tid, nthreads, &ring->prev, &ring->next, work->sendbuff, work->recvbuff, work->redOpArg, 0, 0, 0, work);
+    //Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0> prims
+      //(tid, nthreads, &ring->prev, &ring->next, work->sendbuff, work->recvbuff, work->redOpArg, 0, 0, 0, work);
 
     for (ssize_t elemOffset = 0; elemOffset < channelCount; elemOffset += loopCount) {
       ssize_t remCount = channelCount - elemOffset;
@@ -218,8 +223,8 @@ namespace {
         target_offset = gridOffset + elemOffset + target_chunkOffset;
         this_nelem = (int)min(chunkCount*xchg_nchunks, remCount - this_chunkOffset);
         target_nelem = (int)min(chunkCount*xchg_nchunks, remCount - target_chunkOffset);
-        prims.directSend(target_offset, target_offset, target_nelem);
-        prims.directRecvReduceCopy(this_offset, this_offset, this_nelem);
+        prim_v[j].get().directSend(target_offset, target_offset, target_nelem);
+        prim_v[j].get().directRecvReduceCopy(this_offset, this_offset, this_nelem);
 
         mask <<= 1;
         xchg_nchunks /= 2;
@@ -245,7 +250,7 @@ namespace {
       target_chunk = this_chunk;
       this_chunk = tmp_chunk;
 
-      for (int j = 0; j < log2nranks; ++j) {
+      for (int j = log2nranks-1; j >= 0; --j) {
         targetRank = rank ^ mask;
         if ((rank & mask) != 0) { // targetRank < rank
             this_chunk = target_chunk - xchg_nchunks;
@@ -262,8 +267,8 @@ namespace {
         //nelem = chunkCount*xchg_nchunks;
         this_nelem = (int)min(chunkCount*xchg_nchunks, remCount - this_chunkOffset);
         target_nelem = (int)min(chunkCount*xchg_nchunks, remCount - target_chunkOffset);
-        prims.directSend(target_offset, target_offset, target_nelem);
-        prims.directRecvCopy(this_offset, this_offset, this_nelem);
+        prim_v[j].get().directSend(target_offset, target_offset, target_nelem);
+        prim_v[j].get().directRecvCopy(this_offset, this_offset, this_nelem);
         //prims.directRecvCopyDirectSend(offset, nelem);
 
         if ((rank & mask) != 0) // targetRank < rank
