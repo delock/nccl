@@ -97,23 +97,22 @@ namespace {
     ssize_t chunkCount;
     ncclCollCbdPart(work, ncclShmem.channelId, Proto::Id, sizeof(T), (ssize_t*)nullptr, &gridOffset, &channelCount, &chunkCount);
     const ssize_t loopCount = log2nranks * chunkCount;
-    ssize_t offset;
     int this_nelem, target_nelem;
-    int chunk;
 
     // Coverity reports that the callee treats &ring->next as an array.  However, due to the use of
     // FanSymmetric<1>, only the first element is ever accessed, so it's fine.
     // coverity[callee_ptr_arith:FALSE]
     // initialize log2nranks primitives and put them in a vector
     using prim_t = Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0>;
-    std::vector<std::reference_wrapper<prim_t>> prim_v;
+    prim_t* prim_v[8];
+    //std::vector<std::reference_wrapper<prim_t>> prim_v;
     int mask = 1;
     for (int i=0; i<log2nranks; i++) {
       int targetRank = rank ^ mask;
       // create primitive for target rank and put it in vector
       Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0> prims
         (tid, nthreads, &ring->userRanks[targetRank], &ring->userRanks[targetRank], work->sendbuff, work->recvbuff, work->redOpArg, 0, 0, 0, work);
-      prim_v.push_back(prims);
+      prim_v[i] = &prims;
       mask <<= 1;
     }
     //Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0> prims
@@ -121,7 +120,7 @@ namespace {
 
     for (ssize_t elemOffset = 0; elemOffset < channelCount; elemOffset += loopCount) {
       ssize_t remCount = channelCount - elemOffset;
-      ssize_t chunkOffset, this_chunkOffset, target_chunkOffset, this_offset, target_offset;
+      ssize_t this_chunkOffset, target_chunkOffset, this_offset, target_offset;
 
       if (remCount < loopCount) chunkCount = alignUp(divUp(remCount, nranks), 16/sizeof(T));
 
@@ -223,8 +222,8 @@ namespace {
         target_offset = gridOffset + elemOffset + target_chunkOffset;
         this_nelem = (int)min(chunkCount*xchg_nchunks, remCount - this_chunkOffset);
         target_nelem = (int)min(chunkCount*xchg_nchunks, remCount - target_chunkOffset);
-        prim_v[j].get().directSend(target_offset, target_offset, target_nelem);
-        prim_v[j].get().directRecvReduceCopy(this_offset, this_offset, this_nelem);
+        prim_v[j]->directSend(target_offset, target_offset, target_nelem);
+        prim_v[j]->directRecvReduceCopy(this_offset, this_offset, this_nelem);
 
         mask <<= 1;
         xchg_nchunks /= 2;
@@ -267,8 +266,8 @@ namespace {
         //nelem = chunkCount*xchg_nchunks;
         this_nelem = (int)min(chunkCount*xchg_nchunks, remCount - this_chunkOffset);
         target_nelem = (int)min(chunkCount*xchg_nchunks, remCount - target_chunkOffset);
-        prim_v[j].get().directSend(target_offset, target_offset, target_nelem);
-        prim_v[j].get().directRecvCopy(this_offset, this_offset, this_nelem);
+        prim_v[j]->directSend(target_offset, target_offset, target_nelem);
+        prim_v[j]->directRecvCopy(this_offset, this_offset, this_nelem);
         //prims.directRecvCopyDirectSend(offset, nelem);
 
         if ((rank & mask) != 0) // targetRank < rank
@@ -438,7 +437,8 @@ template<typename T, typename RedOp>
 struct RunWorkColl<ncclFuncAllReduce, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPLE> {
   __device__ __forceinline__ void run(int tid, int nthreads, struct ncclDevWorkColl* work) {
     using Proto = ProtoSimple<ALLREDUCE_CHUNKSTEPS/ALLREDUCE_SLICESTEPS, ALLREDUCE_SLICESTEPS>;
-    runRing<T, RedOp, Proto>(tid, nthreads, work);
+    //runRing<T, RedOp, Proto>(tid, nthreads, work);
+    runRabenseifner<T, RedOp, Proto>(tid, nthreads, work);
   }
 };
 
