@@ -105,7 +105,6 @@ namespace {
     // initialize log2nranks primitives and put them in a vector
     using prim_t = Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0>;
     prim_t* prim_v[8];
-    //std::vector<std::reference_wrapper<prim_t>> prim_v;
     int mask = 1;
     for (int i=0; i<log2nranks; i++) {
       int targetRank = rank ^ mask;
@@ -115,8 +114,6 @@ namespace {
       prim_v[i] = &prims;
       mask <<= 1;
     }
-    //Primitives<T, RedOp, FanSymmetric<1>, 1, Proto, 0> prims
-      //(tid, nthreads, &ring->prev, &ring->next, work->sendbuff, work->recvbuff, work->redOpArg, 0, 0, 0, work);
 
     for (ssize_t elemOffset = 0; elemOffset < channelCount; elemOffset += loopCount) {
       ssize_t remCount = channelCount - elemOffset;
@@ -129,22 +126,6 @@ namespace {
       };
 
       int mask, targetRank, xchg_nchunks, this_chunk, target_chunk, tmp_chunk;
-      // step 0: push data to next GPU
-      //mask = 1;
-      //targetRank = rank ^ mask;
-      //xchg_nchunks = nranks/2;
-      // the chunk receieved
-      //this_chunk = rank & mask;
-      // the chunk send to remote rank
-      //target_chunk = targetRank & (mask*2-1);
-
-      //this_chunkOffset = this_chunk * chunkCount;
-      //target_chunkOffset = target_chunk * chunkCount;
-      //this_offset = gridOffset + elemOffset + this_chunkOffset;
-      //target_offset = gridOffset + elemOffset + target_chunkOffset;
-      //nelem = chunkCount*xchg_nchunks;
-      //prims.directSend(offset, offset, nelem);
-
       // rank:                0      1      2       3       4       5       6       7
       // binary:              000    001    010     011     100     101     110     111
       // reverse binary:      000    100    010     110     001     101     011     111
@@ -229,18 +210,6 @@ namespace {
         xchg_nchunks /= 2;
       }
 
-      // step k-1: reduce this buffer and data, which will produce the final
-      // result that we store in this data and push to the next GPU
-      //targetRank = rank ^ mask;
-      //mask >>= 1;
-      //assert (xchg_nchunks == 1);
-      //chunk = rank & (mask*2-1);
-      //
-      //chunkOffset = chunk * chunkCount;
-      //offset = gridOffset + elemOffset + chunkOffset;
-      //nelem = (int)min(chunkCount*xchg_nchunks, remCount - chunkOffset);
-      //prims.directRecvReduceCopyDirectSend(offset, offset, nelem, /*postOp=*/true);
-
       // k-1 steps: copy to next GPU
       xchg_nchunks = 1;
       mask >>= 1;
@@ -262,27 +231,16 @@ namespace {
         target_chunkOffset = target_chunk * chunkCount;
         this_offset = gridOffset + elemOffset + this_chunkOffset;
         target_offset = gridOffset + elemOffset + target_chunkOffset;
-        //nelem = (int)min(chunkCount*xchg_nchunks, remCount - chunkOffset);
-        //nelem = chunkCount*xchg_nchunks;
         this_nelem = (int)min(chunkCount*xchg_nchunks, remCount - this_chunkOffset);
         target_nelem = (int)min(chunkCount*xchg_nchunks, remCount - target_chunkOffset);
         prim_v[j]->directSend(target_offset, target_offset, target_nelem);
         prim_v[j]->directRecvCopy(this_offset, this_offset, this_nelem);
-        //prims.directRecvCopyDirectSend(offset, nelem);
 
         if ((rank & mask) != 0) // targetRank < rank
             target_chunk -= xchg_nchunks;
         xchg_nchunks *= 2;
         mask >>= 1;
       }
-
-      // Make final copy from buffer to dest.
-      //chunk = modRanks(rank + 1);
-      //chunkOffset = chunk * chunkCount;
-      //offset = gridOffset + elemOffset + chunkOffset;
-      //nelem = (int)min(chunkCount, remCount - chunkOffset);
-
-      //prims.directRecv(offset, offset, nelem);
     }
   }
 
