@@ -6,7 +6,10 @@ ncclResult_t ncclTransportRingConnect(struct ncclComm* comm) {
   if (comm && comm->nRanks > 1) {
     for (int c = 0; c < comm->nChannels; c++) {
       struct ncclChannel* channel = comm->channels + c;
-      NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &channel->ring.prev, 1, &channel->ring.next, 0), ret, fail);
+      // connection for ring algo
+      //NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, 1, &channel->ring.prev, 1, &channel->ring.next, 0), ret, fail);
+      // connect for alltoall algo
+      NCCLCHECKGOTO(ncclTransportP2pConnect(comm, c, comm->nRanks, channel->ring.userRanks, comm->nRanks, channel->ring.userRanks, 0), ret, fail);
     }
     NCCLCHECKGOTO(ncclTransportP2pSetup(comm, &comm->graphs[NCCL_ALGO_RING], 0), ret, fail);
     INFO(NCCL_INIT, "Connected all rings");
